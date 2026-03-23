@@ -24,6 +24,16 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Doppler CLI via official apt repo
+RUN curl -sLf --retry 3 --tlsv1.2 --proto "=https" \
+      'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' \
+      | gpg --dearmor -o /usr/share/keyrings/doppler-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/doppler-archive-keyring.gpg] https://packages.doppler.com/public/cli/deb/debian any-version main" \
+      | tee /etc/apt/sources.list.d/doppler-cli.list \
+    && apt-get update && apt-get install -y doppler \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chromium path for agent-browser

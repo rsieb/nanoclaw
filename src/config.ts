@@ -20,11 +20,10 @@ export const SCHEDULER_POLL_INTERVAL = 60000;
 const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
 
-// Mount security: allowlist stored OUTSIDE project root, never mounted into containers
+// Mount security: allowlist stored in project config dir (writable by main agent)
 export const MOUNT_ALLOWLIST_PATH = path.join(
-  HOME_DIR,
-  '.config',
-  'nanoclaw',
+  PROJECT_ROOT,
+  'config',
   'mount-allowlist.json',
 );
 export const SENDER_ALLOWLIST_PATH = path.join(

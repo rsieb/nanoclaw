@@ -210,6 +210,19 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
+  async addReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    try {
+      await this.app.client.reactions.add({
+        channel: channelId,
+        name: emoji,
+        timestamp: messageId,
+      });
+    } catch (err) {
+      logger.debug({ jid, err }, 'Failed to add Slack reaction');
+    }
+  }
+
   /**
    * Sync channel metadata from Slack.
    * Fetches channels the bot is a member of and stores their names in the DB.

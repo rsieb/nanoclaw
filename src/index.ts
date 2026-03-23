@@ -208,6 +208,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
+  const lastMessage = missedMessages[missedMessages.length - 1];
+  await channel.addReaction?.(chatJid, lastMessage.id, 'eyes').catch(() => {});
   let hadError = false;
   let outputSentToUser = false;
 

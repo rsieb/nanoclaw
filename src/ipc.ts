@@ -455,6 +455,24 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'deploy':
+      // Only main group can trigger a deploy
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized deploy attempt blocked');
+        break;
+      }
+      logger.info({ sourceGroup }, 'Deploy requested via IPC');
+      // Run deploy script in background (non-blocking)
+      const { exec } = await import('child_process');
+      exec(
+        `${process.cwd()}/scripts/deploy.sh >> ${process.cwd()}/logs/deploy.log 2>&1`,
+        (err) => {
+          if (err) logger.error({ err }, 'Deploy script failed');
+          else logger.info('Deploy script completed');
+        },
+      );
+      break;
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
