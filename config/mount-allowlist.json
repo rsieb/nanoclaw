@@ -2,8 +2,8 @@
   "allowedRoots": [
     {
       "path": "~/rosidian",
-      "allowReadWrite": false,
-      "description": "Roland's Obsidian vault - read-only"
+      "allowReadWrite": true,
+      "description": "Roland's Obsidian vault - read/write"
     }
   ],
   "blockedPatterns": [],

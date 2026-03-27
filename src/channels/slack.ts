@@ -28,11 +28,25 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+// Per-app state — each Slack App instance has its own bot user ID.
+interface AppEntry {
+  app: App;
+  botUserId: string | undefined;
+}
+
 export class SlackChannel implements Channel {
   name = 'slack';
 
-  private app: App;
-  private botUserId: string | undefined;
+  // Default app (Nani's own bot token from .env). Used for groups that have
+  // no per-agent tokens configured and as the catch-all event listener.
+  private defaultApp: App;
+  private defaultBotUserId: string | undefined;
+
+  // Per-channel-JID app instances for agent bots (Nemo, Campy, Rabio, …).
+  // Keyed by the Slack channel JID ("slack:<channelId>").
+  // Populated during connect() from registeredGroups that carry slackBotToken.
+  private agentApps: Map<string, AppEntry> = new Map();
+
   private connected = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
@@ -55,20 +69,25 @@ export class SlackChannel implements Channel {
       );
     }
 
-    this.app = new App({
+    this.defaultApp = new App({
       token: botToken,
       appToken,
       socketMode: true,
       logLevel: LogLevel.ERROR,
     });
 
-    this.setupEventHandlers();
+    this.setupEventHandlersForApp(this.defaultApp, () => this.defaultBotUserId);
   }
 
-  private setupEventHandlers(): void {
+  // Wire up Bolt event handlers for a given App instance.
+  // getBotUserId is a thunk so it can be read lazily after connect().
+  private setupEventHandlersForApp(
+    app: App,
+    getBotUserId: () => string | undefined,
+  ): void {
     // Use app.event('message') instead of app.message() to capture all
     // message subtypes including bot_message (needed to track our own output)
-    this.app.event('message', async ({ event }) => {
+    app.event('message', async ({ event }) => {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
       // We filter on subtype first, then narrow to the two types we handle.
       const subtype = (event as { subtype?: string }).subtype;
@@ -94,14 +113,15 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
+      const botUserId = getBotUserId();
+      const isBotMessage = !!msg.bot_id || msg.user === botUserId;
 
       let senderName: string;
       if (isBotMessage) {
         senderName = ASSISTANT_NAME;
       } else {
         senderName =
-          (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
+          (msg.user ? await this.resolveUserName(msg.user, app) : undefined) ||
           msg.user ||
           'unknown';
       }
@@ -110,8 +130,8 @@ export class SlackChannel implements Channel {
       // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
       // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
       let content = msg.text;
-      if (this.botUserId && !isBotMessage) {
-        const mentionPattern = `<@${this.botUserId}>`;
+      if (botUserId && !isBotMessage) {
+        const mentionPattern = `<@${botUserId}>`;
         if (
           content.includes(mentionPattern) &&
           !TRIGGER_PATTERN.test(content)
@@ -134,18 +154,20 @@ export class SlackChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    await this.app.start();
+    // Start the default (Nani) app first
+    await this.defaultApp.start();
 
-    // Get bot's own user ID for self-message detection.
-    // Resolve this BEFORE setting connected=true so that messages arriving
-    // during startup can correctly detect bot-sent messages.
+    // Resolve default bot user ID
     try {
-      const auth = await this.app.client.auth.test();
-      this.botUserId = auth.user_id as string;
-      logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
+      const auth = await this.defaultApp.client.auth.test();
+      this.defaultBotUserId = auth.user_id as string;
+      logger.info({ botUserId: this.defaultBotUserId }, 'Connected to Slack (default bot)');
     } catch (err) {
-      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
+      logger.warn({ err }, 'Connected to Slack but failed to get default bot user ID');
     }
+
+    // Start per-agent App instances for any registered groups that have their own tokens
+    await this.startAgentApps();
 
     this.connected = true;
 
@@ -154,6 +176,53 @@ export class SlackChannel implements Channel {
 
     // Sync channel names on startup
     await this.syncChannelMetadata();
+  }
+
+  // For each registered group that carries slackBotToken + slackAppToken,
+  // spin up a dedicated App instance and store it in agentApps.
+  private async startAgentApps(): Promise<void> {
+    const groups = this.opts.registeredGroups();
+    for (const [jid, group] of Object.entries(groups)) {
+      if (!group.slackBotToken || !group.slackAppToken) continue;
+      if (this.agentApps.has(jid)) continue; // already running
+
+      try {
+        const agentApp = new App({
+          token: group.slackBotToken,
+          appToken: group.slackAppToken,
+          socketMode: true,
+          logLevel: LogLevel.ERROR,
+        });
+
+        const entry: AppEntry = { app: agentApp, botUserId: undefined };
+        this.agentApps.set(jid, entry);
+
+        // Wire events — use a stable reference so the closure always reads the
+        // latest botUserId even after the auth.test() call below.
+        this.setupEventHandlersForApp(agentApp, () => entry.botUserId);
+
+        await agentApp.start();
+
+        try {
+          const auth = await agentApp.client.auth.test();
+          entry.botUserId = auth.user_id as string;
+          logger.info(
+            { jid, botUserId: entry.botUserId, folder: group.folder },
+            'Agent Slack bot connected',
+          );
+        } catch (err) {
+          logger.warn({ jid, err }, 'Agent Slack bot connected but failed to get bot user ID');
+        }
+      } catch (err) {
+        logger.error({ jid, err }, 'Failed to start agent Slack bot');
+      }
+    }
+  }
+
+  // Return the App to use for sending to a given JID.
+  // Agent groups with their own app use it; everything else falls back to default.
+  private appFor(jid: string): App {
+    return this.agentApps.get(jid)?.app ?? this.defaultApp;
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -168,13 +237,15 @@ export class SlackChannel implements Channel {
       return;
     }
 
+    const app = this.appFor(jid);
+
     try {
       // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text });
+        await app.client.chat.postMessage({ channel: channelId, text });
       } else {
         for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
-          await this.app.client.chat.postMessage({
+          await app.client.chat.postMessage({
             channel: channelId,
             text: text.slice(i, i + MAX_MESSAGE_LENGTH),
           });
@@ -200,7 +271,16 @@ export class SlackChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    await this.app.stop();
+    // Stop all agent apps first, then the default app
+    for (const [jid, entry] of this.agentApps.entries()) {
+      try {
+        await entry.app.stop();
+      } catch (err) {
+        logger.warn({ jid, err }, 'Error stopping agent Slack bot');
+      }
+    }
+    this.agentApps.clear();
+    await this.defaultApp.stop();
   }
 
   // Slack does not expose a typing indicator API for bots.
@@ -210,10 +290,15 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
-  async addReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async addReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
+    const app = this.appFor(jid);
     try {
-      await this.app.client.reactions.add({
+      await app.client.reactions.add({
         channel: channelId,
         name: emoji,
         timestamp: messageId,
@@ -226,6 +311,7 @@ export class SlackChannel implements Channel {
   /**
    * Sync channel metadata from Slack.
    * Fetches channels the bot is a member of and stores their names in the DB.
+   * Runs against the default app (Nani) — agent bots will be in their own channels.
    */
   async syncChannelMetadata(): Promise<void> {
     try {
@@ -234,7 +320,7 @@ export class SlackChannel implements Channel {
       let count = 0;
 
       do {
-        const result = await this.app.client.conversations.list({
+        const result = await this.defaultApp.client.conversations.list({
           types: 'public_channel,private_channel',
           exclude_archived: true,
           limit: 200,
@@ -257,14 +343,14 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(userId: string): Promise<string | undefined> {
+  private async resolveUserName(userId: string, app: App): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
     if (cached) return cached;
 
     try {
-      const result = await this.app.client.users.info({ user: userId });
+      const result = await app.client.users.info({ user: userId });
       const name = result.user?.real_name || result.user?.name;
       if (name) this.userNameCache.set(userId, name);
       return name;
@@ -285,7 +371,8 @@ export class SlackChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         const channelId = item.jid.replace(/^slack:/, '');
-        await this.app.client.chat.postMessage({
+        const app = this.appFor(item.jid);
+        await app.client.chat.postMessage({
           channel: channelId,
           text: item.text,
         });

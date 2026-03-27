@@ -446,6 +446,8 @@ export async function processTaskIpc(
           added_at: new Date().toISOString(),
           containerConfig: data.containerConfig,
           requiresTrigger: data.requiresTrigger,
+          slackBotToken: data.slackBotToken,
+          slackAppToken: data.slackAppToken,
         });
       } else {
         logger.warn(

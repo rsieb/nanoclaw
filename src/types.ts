@@ -40,6 +40,10 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  // Per-agent Slack credentials. When set, this group uses its own Slack App
+  // instance (separate bot identity) instead of the default NanoClaw bot.
+  slackBotToken?: string;
+  slackAppToken?: string;
 }
 
 export interface NewMessage {

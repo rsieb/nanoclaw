@@ -291,7 +291,11 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async addReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async addReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     if (!this.bot) return;
     try {
       const chatId = jid.replace(/^tg:/, '');
