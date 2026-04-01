@@ -6,6 +6,7 @@ import { readEnvFile } from './env.js';
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
+// Agent channels (Nemo, Campy, Rabio) have requires_trigger=0 — they respond to all messages.
 const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
 
 export const ASSISTANT_NAME =
