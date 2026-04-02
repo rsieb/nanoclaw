@@ -129,6 +129,8 @@ export class SlackChannel implements Channel {
       // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
       // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
       // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
+      // Use the group's own trigger name (e.g. "@Nemo") not the global ASSISTANT_NAME,
+      // so per-agent bots identify correctly when mentioned.
       let content = msg.text;
       if (botUserId && !isBotMessage) {
         const mentionPattern = `<@${botUserId}>`;
@@ -136,7 +138,9 @@ export class SlackChannel implements Channel {
           content.includes(mentionPattern) &&
           !TRIGGER_PATTERN.test(content)
         ) {
-          content = `@${ASSISTANT_NAME} ${content}`;
+          const group = groups[jid];
+          const agentName = group?.trigger?.replace(/^@/, '') || ASSISTANT_NAME;
+          content = `@${agentName} ${content}`;
         }
       }
 
@@ -161,9 +165,15 @@ export class SlackChannel implements Channel {
     try {
       const auth = await this.defaultApp.client.auth.test();
       this.defaultBotUserId = auth.user_id as string;
-      logger.info({ botUserId: this.defaultBotUserId }, 'Connected to Slack (default bot)');
+      logger.info(
+        { botUserId: this.defaultBotUserId },
+        'Connected to Slack (default bot)',
+      );
     } catch (err) {
-      logger.warn({ err }, 'Connected to Slack but failed to get default bot user ID');
+      logger.warn(
+        { err },
+        'Connected to Slack but failed to get default bot user ID',
+      );
     }
 
     // Start per-agent App instances for any registered groups that have their own tokens
@@ -211,7 +221,10 @@ export class SlackChannel implements Channel {
             'Agent Slack bot connected',
           );
         } catch (err) {
-          logger.warn({ jid, err }, 'Agent Slack bot connected but failed to get bot user ID');
+          logger.warn(
+            { jid, err },
+            'Agent Slack bot connected but failed to get bot user ID',
+          );
         }
       } catch (err) {
         logger.error({ jid, err }, 'Failed to start agent Slack bot');
@@ -343,7 +356,10 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(userId: string, app: App): Promise<string | undefined> {
+  private async resolveUserName(
+    userId: string,
+    app: App,
+  ): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
