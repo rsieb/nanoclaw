@@ -72,15 +72,15 @@ install_deps() {
 
   cd "$PROJECT_ROOT"
 
-  # npm install with --unsafe-perm if root (needed for native modules)
+  # Install without lifecycle scripts; native modules are verified separately.
   local npm_flags=""
   if [ "$IS_ROOT" = "true" ]; then
     npm_flags="--unsafe-perm"
     log "Running as root, using --unsafe-perm"
   fi
 
-  log "Running npm ci $npm_flags"
-  if npm ci $npm_flags >> "$LOG_FILE" 2>&1; then
+  log "Running npm ci --ignore-scripts $npm_flags"
+  if npm ci --ignore-scripts $npm_flags >> "$LOG_FILE" 2>&1; then
     DEPS_OK="true"
     log "npm install succeeded"
   else
